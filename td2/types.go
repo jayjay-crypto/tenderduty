@@ -102,6 +102,8 @@ type ChainConfig struct {
 	statPrevoteMiss     float64
 	statPrecommitMiss   float64
 	statConsecutiveMiss float64
+	statHeartbeatMiss   float64
+	statHeartbeatSign   float64
 
 	// ChainId is used to ensure any endpoints contacted claim to be on the correct chain. This is a weak verification,
 	// no light client validation is performed, so caution is advised when using public endpoints.
@@ -109,6 +111,8 @@ type ChainConfig struct {
 	// ValAddress is the validator operator address to be monitored. Tenderduty v1 required the consensus address,
 	// this is no longer needed. The operator address is much easier to find in explorers etc.
 	ValAddress string `yaml:"valoper_address"`
+	// BroadcasterAddress is the address that sends Heartbeat transactions (specific to Axelar)
+	BroadcasterAddress string `yaml:"broadcaster_address"`
 	// ValconsOverride allows skipping the lookup of the consensus public key and setting it directly.
 	ValconsOverride string `yaml:"valcons_override"`
 	// ExtraInfo will be appended to the alert data. This is useful for pagerduty because multiple tenderduty instances

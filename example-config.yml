@@ -69,6 +69,8 @@ chains:
     # to convert ed25519 keys to the appropriate bech32 address.
     # Use valcons address if using ICS
     valoper_address: osmovaloper1xxxxxxx...
+    # Address of the broadcaster for Heartbeat transactions (specific to Axelar)
+    broadcaster_address: axelar1xxxxxxx...
     # Should the monitor revert to using public API endpoints if all supplied RCP nodes fail?
     # This isn't always reliable, not all public nodes have websocket proxying setup correctly.
     public_fallback: no

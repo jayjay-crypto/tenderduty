@@ -19,21 +19,18 @@ var (
 type metricType uint8
 
 const (
-	metricSigned metricType = iota
-	metricProposed
-	metricMissed
-	metricPrevote
-	metricPrecommit
-	metricConsecutive
-	metricWindowMissed
-	metricWindowSize
-	metricLastBlockSeconds
-	metricLastBlockSecondsNotFinal
-
-	metricTotalNodes
-	metricUnealthyNodes
-	metricNodeLagSeconds
-	metricNodeDownSeconds
+	metricSigned          metricType = "signed_blocks"
+	metricProposed        metricType = "proposed_blocks"
+	metricMissed          metricType = "missed_blocks"
+	metricPrevote         metricType = "missed_prevotes"
+	metricPrecommit       metricType = "missed_precommits"
+	metricConsecutive     metricType = "consecutive_misses"
+	metricWindowSize      metricType = "window_size"
+	metricWindowMissed    metricType = "window_missed"
+	metricTotalNodes      metricType = "total_nodes"
+	metricUnealthyNodes   metricType = "unhealthy_nodes"
+	metricHeartbeatMiss   metricType = "missed_heartbeats"
+	metricHeartbeatSign   metricType = "signed_heartbeats"
 )
 
 type promUpdate struct {

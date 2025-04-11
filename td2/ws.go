@@ -19,6 +19,7 @@ import (
 const (
 	QueryNewBlock string = `tm.event='NewBlock'`
 	QueryVote     string = `tm.event='Vote'`
+	QueryTx       string = `message.action='/axelar.tss.v1beta1.HeartBeatRequest'`
 )
 
 // StatusType represents the various possible end states. Prevote and Precommit are special cases, where the node
@@ -31,6 +32,8 @@ const (
 	StatusPrecommit
 	StatusSigned
 	StatusProposed
+	StatusHeartbeatMissed
+	StatusHeartbeatSigned
 )
 
 // StatusUpdate is passed over a channel from the websocket client indicating the current state, it is immediate in the
@@ -40,6 +43,7 @@ type StatusUpdate struct {
 	Height int64
 	Status StatusType
 	Final  bool
+	Type   string // "block" or "heartbeat"
 }
 
 // WsReply is a trimmed down version of the JSON sent from a tendermint websocket subscription.
@@ -111,89 +115,106 @@ func (cc *ChainConfig) WsRun() {
 				if update.Final && update.Height%20 == 0 {
 					l(fmt.Sprintf("🧊 %-12s block %d", cc.ChainId, update.Height))
 				}
-				if update.Status > signState && cc.valInfo.Bonded {
-					signState = update.Status
+				if update.Type == "block" {
+					if update.Status > signState && cc.valInfo.Bonded {
+						signState = update.Status
+					}
+					if update.Final {
+						cc.lastBlockNum = update.Height
+						if td.Prom {
+							td.statsChan <- cc.mkUpdate(metricLastBlockSeconds, time.Since(cc.lastBlockTime).Seconds(), "")
+						}
+						cc.lastBlockTime = time.Now()
+						cc.lastBlockAlarm = false
+						info := getAlarms(cc.name)
+						cc.blocksResults = append([]int{int(signState)}, cc.blocksResults[:len(cc.blocksResults)-1]...)
+						if signState < 3 && cc.valInfo.Bonded {
+							warn := fmt.Sprintf("❌ warning      %s missed block %d on %s", cc.valInfo.Moniker, update.Height, cc.ChainId)
+							info += warn + "\n"
+							cc.lastError = time.Now().UTC().String() + " " + info
+							l(warn)
+						}
+						switch signState {
+						case Statusmissed:
+							cc.statTotalMiss += 1
+							cc.statConsecutiveMiss += 1
+						case StatusPrecommit:
+							cc.statPrecommitMiss += 1
+							cc.statTotalMiss += 1
+							cc.statConsecutiveMiss += 1
+						case StatusPrevote:
+							cc.statPrevoteMiss += 1
+							cc.statTotalMiss += 1
+							cc.statConsecutiveMiss += 1
+						case StatusSigned:
+							cc.statTotalSigns += 1
+							cc.statConsecutiveMiss = 0
+						case StatusProposed:
+							cc.statTotalProps += 1
+							cc.statTotalSigns += 1
+							cc.statConsecutiveMiss = 0
+						}
+						signState = -1
+					}
+				} else if update.Type == "heartbeat" {
+					if update.Final {
+						switch update.Status {
+						case StatusHeartbeatMissed:
+							cc.statHeartbeatMiss += 1
+							warn := fmt.Sprintf("💔 warning      %s missed heartbeat on %s", cc.valInfo.Moniker, cc.ChainId)
+							cc.lastError = time.Now().UTC().String() + " " + warn
+							l(warn)
+						case StatusHeartbeatSigned:
+							cc.statHeartbeatSign += 1
+						}
+					}
 				}
-				if update.Final {
-					cc.lastBlockNum = update.Height
-					if td.Prom {
-						td.statsChan <- cc.mkUpdate(metricLastBlockSeconds, time.Since(cc.lastBlockTime).Seconds(), "")
-					}
-					cc.lastBlockTime = time.Now()
-					cc.lastBlockAlarm = false
-					info := getAlarms(cc.name)
-					cc.blocksResults = append([]int{int(signState)}, cc.blocksResults[:len(cc.blocksResults)-1]...)
-					if signState < 3 && cc.valInfo.Bonded {
-						warn := fmt.Sprintf("❌ warning      %s missed block %d on %s", cc.valInfo.Moniker, update.Height, cc.ChainId)
-						info += warn + "\n"
-						cc.lastError = time.Now().UTC().String() + " " + info
-						l(warn)
-					}
-					switch signState {
-					case Statusmissed:
-						cc.statTotalMiss += 1
-						cc.statConsecutiveMiss += 1
-					case StatusPrecommit:
-						cc.statPrecommitMiss += 1
-						cc.statTotalMiss += 1
-						cc.statConsecutiveMiss += 1
-					case StatusPrevote:
-						cc.statPrevoteMiss += 1
-						cc.statTotalMiss += 1
-						cc.statConsecutiveMiss += 1
-					case StatusSigned:
-						cc.statTotalSigns += 1
-						cc.statConsecutiveMiss = 0
-					case StatusProposed:
-						cc.statTotalProps += 1
-						cc.statTotalSigns += 1
-						cc.statConsecutiveMiss = 0
-					}
-					signState = -1
-					healthyNodes := 0
-					for i := range cc.Nodes {
-						if !cc.Nodes[i].down {
-							healthyNodes += 1
-						} else if !td.HideLogs { // only show this info if sending logs, the point is not to leak host info
-							info += "\n - " + cc.Nodes[i].lastMsg
-						}
-					}
-					switch {
-					case cc.valInfo.Tombstoned:
-						info += "- validator is tombstoned\n"
-					case cc.valInfo.Jailed:
-						info += "- validator is jailed\n"
-					}
-					cc.activeAlerts = alarms.getCount(cc.name)
-					if td.EnableDash {
-						td.updateChan <- &dash.ChainStatus{
-							MsgType:      "status",
-							Name:         cc.name,
-							ChainId:      cc.ChainId,
-							Moniker:      cc.valInfo.Moniker,
-							Bonded:       cc.valInfo.Bonded,
-							Jailed:       cc.valInfo.Jailed,
-							Tombstoned:   cc.valInfo.Tombstoned,
-							Missed:       cc.valInfo.Missed,
-							Window:       cc.valInfo.Window,
-							Nodes:        len(cc.Nodes),
-							HealthyNodes: healthyNodes,
-							ActiveAlerts: cc.activeAlerts,
-							Height:       update.Height,
-							LastError:    info,
-							Blocks:       cc.blocksResults,
-						}
-					}
 
-					if td.Prom {
-						td.statsChan <- cc.mkUpdate(metricSigned, cc.statTotalSigns, "")
-						td.statsChan <- cc.mkUpdate(metricProposed, cc.statTotalProps, "")
-						td.statsChan <- cc.mkUpdate(metricMissed, cc.statTotalMiss, "")
-						td.statsChan <- cc.mkUpdate(metricPrevote, cc.statPrevoteMiss, "")
-						td.statsChan <- cc.mkUpdate(metricPrecommit, cc.statPrecommitMiss, "")
-						td.statsChan <- cc.mkUpdate(metricConsecutive, cc.statConsecutiveMiss, "")
-						td.statsChan <- cc.mkUpdate(metricUnealthyNodes, float64(len(cc.Nodes)-healthyNodes), "")
+				healthyNodes := 0
+				for i := range cc.Nodes {
+					if !cc.Nodes[i].down {
+						healthyNodes += 1
+					} else if !td.HideLogs {
+						info += "\n - " + cc.Nodes[i].lastMsg
 					}
+				}
+				switch {
+				case cc.valInfo.Tombstoned:
+					info += "- validator is tombstoned\n"
+				case cc.valInfo.Jailed:
+					info += "- validator is jailed\n"
+				}
+				cc.activeAlerts = alarms.getCount(cc.name)
+				if td.EnableDash {
+					td.updateChan <- &dash.ChainStatus{
+						MsgType:      "status",
+						Name:         cc.name,
+						ChainId:      cc.ChainId,
+						Moniker:      cc.valInfo.Moniker,
+						Bonded:       cc.valInfo.Bonded,
+						Jailed:       cc.valInfo.Jailed,
+						Tombstoned:   cc.valInfo.Tombstoned,
+						Missed:       cc.valInfo.Missed,
+						Window:       cc.valInfo.Window,
+						Nodes:        len(cc.Nodes),
+						HealthyNodes: healthyNodes,
+						ActiveAlerts: cc.activeAlerts,
+						Height:       update.Height,
+						LastError:    info,
+						Blocks:       cc.blocksResults,
+					}
+				}
+
+				if td.Prom {
+					td.statsChan <- cc.mkUpdate(metricSigned, cc.statTotalSigns, "")
+					td.statsChan <- cc.mkUpdate(metricProposed, cc.statTotalProps, "")
+					td.statsChan <- cc.mkUpdate(metricMissed, cc.statTotalMiss, "")
+					td.statsChan <- cc.mkUpdate(metricPrevote, cc.statPrevoteMiss, "")
+					td.statsChan <- cc.mkUpdate(metricPrecommit, cc.statPrecommitMiss, "")
+					td.statsChan <- cc.mkUpdate(metricConsecutive, cc.statConsecutiveMiss, "")
+					td.statsChan <- cc.mkUpdate(metricUnealthyNodes, float64(len(cc.Nodes)-healthyNodes), "")
+					td.statsChan <- cc.mkUpdate(metricHeartbeatMiss, cc.statHeartbeatMiss, "")
+					td.statsChan <- cc.mkUpdate(metricHeartbeatSign, cc.statHeartbeatSign, "")
 				}
 			case <-ctx.Done():
 				return
@@ -207,6 +228,15 @@ func (cc *ChainConfig) WsRun() {
 	blockChan := make(chan *WsReply)
 	go func() {
 		e := handleBlocks(ctx, blockChan, resultChan, strings.ToUpper(hex.EncodeToString(cc.valInfo.Conspub)))
+		if e != nil {
+			l("🛑", cc.ChainId, e)
+			cancel()
+		}
+	}()
+
+	heartbeatChan := make(chan *WsReply)
+	go func() {
+		e := handleHeartbeats(ctx, heartbeatChan, resultChan, cc.BroadcasterAddress)
 		if e != nil {
 			l("🛑", cc.ChainId, e)
 			cancel()
@@ -234,13 +264,15 @@ func (cc *ChainConfig) WsRun() {
 				blockChan <- reply
 			case `tendermint/event/Vote`:
 				voteChan <- reply
+			case `tendermint/event/Tx`:
+				heartbeatChan <- reply
 			default:
 				// fmt.Println("unknown response", reply.Type())
 			}
 		}
 	}()
 
-	for _, subscribe := range []string{QueryNewBlock, QueryVote} {
+	for _, subscribe := range []string{QueryNewBlock, QueryVote, QueryTx} {
 		q := fmt.Sprintf(`{"jsonrpc":"2.0","method":"subscribe","id":1,"params":{"query":"%s"}}`, subscribe)
 		err = cc.wsclient.WriteMessage(websocket.TextMessage, []byte(q))
 		if err != nil {
@@ -249,7 +281,7 @@ func (cc *ChainConfig) WsRun() {
 			break
 		}
 	}
-	l(fmt.Sprintf("⚙️ %-12s watching for NewBlock and Vote events via %s", cc.ChainId, cc.client.Remote()))
+	l(fmt.Sprintf("⚙️ %-12s watching for NewBlock, Vote, and Heartbeat events via %s", cc.ChainId, cc.client.Remote()))
 	for {
 		select {
 		case <-cc.client.Quit():
@@ -323,6 +355,7 @@ func handleBlocks(ctx context.Context, blocks chan *WsReply, results chan Status
 				Height: b.Block.Header.Height.val(),
 				Status: Statusmissed,
 				Final:  true,
+				Type:   "block",
 			}
 			if b.Block.Header.ProposerAddress == address {
 				upd.Status = StatusProposed
@@ -373,6 +406,86 @@ func handleVotes(ctx context.Context, votes chan *WsReply, results chan StatusUp
 
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+// HeartbeatTx represents a Heartbeat transaction from Axelar
+type HeartbeatTx struct {
+	Height stringInt64 `json:"height"`
+	TxHash string      `json:"txhash"`
+	Code   int         `json:"code"`
+	Events []struct {
+		Type       string `json:"type"`
+		Attributes []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"attributes"`
+	} `json:"events"`
+}
+
+// handleHeartbeats processes Heartbeat transactions
+func handleHeartbeats(ctx context.Context, heartbeats chan *WsReply, results chan StatusUpdate, address string) error {
+	lastHeartbeat := time.Now()
+	heartbeatTicker := time.NewTicker(time.Minute)
+	defer heartbeatTicker.Stop()
+
+	for {
+		select {
+		case <-heartbeatTicker.C:
+			// Check if we've missed a heartbeat (assuming they should come every minute)
+			if time.Since(lastHeartbeat) > time.Minute {
+				results <- StatusUpdate{
+					Height: 0, // We don't have a block height for missed heartbeats
+					Status: StatusHeartbeatMissed,
+					Final:  true,
+					Type:   "heartbeat",
+				}
+			}
+		case tx := <-heartbeats:
+			lastHeartbeat = time.Now()
+			heartbeat := &HeartbeatTx{}
+			err := json.Unmarshal(tx.Value(), heartbeat)
+			if err != nil {
+				l("could not decode heartbeat tx", err)
+				continue
+			}
+
+			// Check if this is a block where a heartbeat is expected (every 50 blocks)
+			blockHeight := heartbeat.Height.val()
+			if blockHeight%50 == 1 { // Heartbeats start at block 1 and repeat every 50 blocks
+				// Check if this heartbeat is from our broadcaster
+				isFromBroadcaster := false
+				for _, event := range heartbeat.Events {
+					if event.Type == "message" {
+						for _, attr := range event.Attributes {
+							if attr.Key == "sender" && attr.Value == address {
+								isFromBroadcaster = true
+								break
+							}
+						}
+					}
+				}
+
+				if isFromBroadcaster {
+					results <- StatusUpdate{
+						Height: blockHeight,
+						Status: StatusHeartbeatSigned,
+						Final:  true,
+						Type:   "heartbeat",
+					}
+				} else {
+					// If we're in a block where a heartbeat is expected but none from our broadcaster
+					results <- StatusUpdate{
+						Height: blockHeight,
+						Status: StatusHeartbeatMissed,
+						Final:  true,
+						Type:   "heartbeat",
+					}
+				}
+			}
+		case <-ctx.Done():
+			return nil
 		}
 	}
 }
