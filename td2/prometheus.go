@@ -19,18 +19,23 @@ var (
 type metricType uint8
 
 const (
-	metricSigned          metricType = "signed_blocks"
-	metricProposed        metricType = "proposed_blocks"
-	metricMissed          metricType = "missed_blocks"
-	metricPrevote         metricType = "missed_prevotes"
-	metricPrecommit       metricType = "missed_precommits"
-	metricConsecutive     metricType = "consecutive_misses"
-	metricWindowSize      metricType = "window_size"
-	metricWindowMissed    metricType = "window_missed"
-	metricTotalNodes      metricType = "total_nodes"
-	metricUnealthyNodes   metricType = "unhealthy_nodes"
-	metricHeartbeatMiss   metricType = "missed_heartbeats"
-	metricHeartbeatSign   metricType = "signed_heartbeats"
+	metricSigned metricType = iota
+	metricProposed
+	metricMissed
+	metricPrevote
+	metricPrecommit
+	metricConsecutive
+	metricWindowMissed
+	metricWindowSize
+	metricLastBlockSeconds
+	metricLastBlockSecondsNotFinal
+
+	metricTotalNodes
+	metricUnealthyNodes
+	metricNodeLagSeconds
+	metricNodeDownSeconds
+	metricHeartbeatMiss
+	metricHeartbeatSign
 )
 
 type promUpdate struct {
@@ -115,6 +120,16 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) {
 		Help: "the count of unhealthy rpc endpoints being monitored for a chain",
 	}, chainLabels)
 
+	// setup heartbeat gauges
+	missedHeartbeats := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_missed_heartbeats",
+		Help: "count of heartbeats missed since tenderduty was started",
+	}, chainLabels)
+	signedHeartbeats := promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "tenderduty_signed_heartbeats",
+		Help: "count of heartbeats signed since tenderduty was started",
+	}, chainLabels)
+
 	// extra labels for individual node stats
 	nodeLagSec := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tenderduty_endpoint_syncing_seconds_behind",
@@ -138,8 +153,10 @@ func prometheusExporter(ctx context.Context, updates chan *promUpdate) {
 		metricLastBlockSecondsNotFinal: lastBlockSecUnfinalized,
 		metricTotalNodes:               nodesMonitored,
 		metricUnealthyNodes:            nodesUnhealthy,
-		metricNodeLagSeconds:           nodeLagSec,  // todo
-		metricNodeDownSeconds:          nodeDownSec, // todo
+		metricNodeLagSeconds:           nodeLagSec,
+		metricNodeDownSeconds:          nodeDownSec,
+		metricHeartbeatMiss:            missedHeartbeats,
+		metricHeartbeatSign:            signedHeartbeats,
 	}
 
 	go func() {
