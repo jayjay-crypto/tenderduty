@@ -171,6 +171,7 @@ func (cc *ChainConfig) WsRun() {
 				}
 
 				healthyNodes := 0
+				var info string
 				for i := range cc.Nodes {
 					if !cc.Nodes[i].down {
 						healthyNodes += 1
